@@ -1,4 +1,4 @@
-from persona import persona_list
+from persona import persona_list, NAME_LIST  # NAME_LIST를 persona.py에서 함께 임포트
 import random
 import chess
 import copy
@@ -21,6 +21,15 @@ def initialize_board(fen: str = None) -> chess.Board:
         # FEN이 제공되지 않으면 기본값으로 시작
         return chess.Board()
 
+def get_piece_id_at_square(white_ids: dict, square_name: str) -> str | None:
+    """
+    주어진 칸 이름(e.g., 'a2')에 위치한 백색 기물의 ID(e.g., 'P1')를 찾습니다.
+    """
+    # white_ids는 {ID: square_name} 형태입니다.
+    for piece_id, location in white_ids.items():
+        if location == square_name:
+            return piece_id
+    return None
 
 def assign_white_piece_ids(board: chess.Board) -> dict:
     """
@@ -117,14 +126,14 @@ def initialize_piece_data(
     board: chess.Board, white_id_map: dict, persona_list_dict: dict
 ) -> dict:
     """
-    백색 기물 ID 맵을 기반으로 각 기물의 상세 데이터를 초기화합니다.
-    [수정됨]
-    - 'type': 기물 심볼 (e.g., "P", "N")
-    - 'profile': 랜덤 페르소나 텍스트 (e.g., "용감한 폰...")
+    백색 기물 ID 맵을 기반으로 각 기물의 상세 데이터와 '이름'을 초기화합니다.
+    (수정됨: NAME_LIST에서 이름을 가져오고, 이름을 중복 없이 할당합니다.)
     """
     piece_data = {}
 
     available_personas = copy.deepcopy(persona_list_dict)
+    # NAME_LIST를 복사하여 사용 후 제거할 수 있게 합니다.
+    available_names_by_type = copy.deepcopy(NAME_LIST) 
 
     for piece_id, square_name in white_id_map.items():
 
@@ -147,17 +156,25 @@ def initialize_piece_data(
             )
             selected_profile = f"기본 페르소나 ({piece_id})"
 
-        # 3. 'history' 초기화
+        # 3. [추가] 클래스별 랜덤 이름 할당
+        selected_name = f"{piece_id} NoName" # 기본값
+        if piece_symbol in available_names_by_type and available_names_by_type[piece_symbol]:
+            name_list = available_names_by_type[piece_symbol]
+            # 목록에서 이름을 뽑은 후 제거하여 중복을 방지
+            name_index = random.randrange(len(name_list))
+            selected_name = name_list.pop(name_index) 
+        
+        # 4. 'history' 초기화
         initial_history = [{"role": "system", "content": selected_profile}]
 
-        # 4. piece_data 딕셔너리에 추가
+        # 5. piece_data 딕셔너리에 추가
         piece_data[piece_id] = {
-            # ▼▼▼ [최종 수정] ▼▼▼
-            "type": piece_symbol,  # e.g., "P"
-            "profile": selected_profile,  # e.g., "애국심이..."
+            "type": piece_symbol, 
+            "profile": selected_profile, 
             "history": initial_history,
             "rejection_count_this_turn": 0,
             "current_square": square_name,
+            "name": selected_name, # <-- 이름 추가
         }
 
     return piece_data
@@ -184,7 +201,6 @@ def initialize_game(fen: str = None) -> (chess.Board, dict, dict):
     white_ids = assign_white_piece_ids(board)
 
     # 3. 기물 상세 데이터(piece_data) 초기화
-    #    (persona_list는 모듈 상단에서 import 되었다고 가정)
     piece_data = initialize_piece_data(board, white_ids, persona_list)
 
     return board, white_ids, piece_data

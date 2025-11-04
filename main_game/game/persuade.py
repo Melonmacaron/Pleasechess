@@ -11,7 +11,7 @@ POD_ID = os.getenv("POD_ID")
 RUNPOD_OLLAMA_URL = f"https://{POD_ID}-11434.proxy.runpod.net"
 
 
-def query_ollama(prompt: list, model: str = "EEVE-Korean-10.8B") -> str:
+def query_ollama(prompt: list, model: str = "EEVE-Korean-10.8B:latest") -> str:
     """
     Ollama API를 호출합니다.
     (수정됨: 네트워크 오류 발생 시 5회 재시도)

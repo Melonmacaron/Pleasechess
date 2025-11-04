@@ -67,8 +67,6 @@ def get_game_status(board: chess.Board) -> str:
         return STATUS_ONGOING_BLACK_TURN
 
 
-import chess
-
 
 def is_move_valid(board: chess.Board, uci_move: str) -> bool:
     """
@@ -96,10 +94,6 @@ def is_move_valid(board: chess.Board, uci_move: str) -> bool:
     else:
         # 행마법 위반, 핀, 체크 미방어 등
         return False
-
-
-import chess
-from persuade import persuade_piece  # <-- [추가] 설득 함수 임포트
 
 # (다른 import 및 get_game_status, is_move_valid 함수가 여기에 있다고 가정)
 
