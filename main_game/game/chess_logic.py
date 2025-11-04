@@ -1,201 +1,356 @@
 import chess
-import random
-import ollama # LLM 상호작용을 위해 필요
+from persuade import persuade_piece
 
-# --- 1. 초기 상수 및 데이터 정의 ---
+# --- 게임 상태 상수 정의 (수정됨) ---
+# 1. 게임 종료 상태
+STATUS_CHECKMATE_WHITE_WINS = "CHECKMATE_WHITE_WINS"
+STATUS_CHECKMATE_BLACK_WINS = "CHECKMATE_BLACK_WINS"
+STATUS_STALEMATE = "STALEMATE"
+STATUS_DRAW_INSUFFICIENT_MATERIAL = "DRAW_INSUFFICIENT_MATERIAL"
+STATUS_DRAW_SEVENTYFIVE_MOVES = "DRAW_SEVENTYFIVE_MOVES"
+STATUS_DRAW_FIVEFOLD_REPETITION = "DRAW_FIVEFOLD_REPETITION"
+STATUS_DRAW_OTHER = "DRAW_OTHER"
 
-# A. 기물 타입별 성격/상황 설정 목록 (킹 제외)
-SITUATION = {
-    "QUEEN": [
-        "나는 가장 강력하고 자존심이 강한 기물이다. 반복적인 설득에도 자존심을 굽히지 않는다.",
-        "나는 대담하고 전진적인 성향이다. 공격적인 수를 좋아하며, 뒤로 물러나는 것을 모욕으로 여긴다."
-    ],
-    "ROOK": [
-        "나는 매우 보수적이며 직선적인 이동만을 신뢰한다. 가족(다른 룩)의 안전을 중시한다.",
-        "나는 과거 전쟁 영웅이었으며 명예를 중시한다. 승리를 위해 기꺼이 희생할 수 있지만, 명분 없는 퇴각은 수치로 여긴다."
-    ],
-    "BISHOP": [
-        "나는 전략가이자 지식인이다. 데이터와 확률에 기반하여 판단하며, 감성적인 설득은 통하지 않는다.",
-        "나는 교단의 지도자로서, 신성한 움직임(대각선) 외의 다른 움직임을 경계한다. '정의로운 희생'에는 동의할 수 있다."
-    ],
-    "KNIGHT": [
-        "나는 기회주의자이자 도박꾼이다. 높은 위험이라도 보상이 크다면 기꺼이 감수한다. 반복적인 거절은 지루하다.",
-        "나는 충직하고 단순하다. 주인의 명령에 쉽게 복종하지만, 예상치 못한 위험에는 겁을 먹는다."
-    ],
-    "PAWN": [
-        "나는 매우 보수적이고 위험을 극도로 회피한다. 가정 경제가 어려워 무사히 퇴근하는 것이 가장 큰 목표다.",
-        "나는 어리숙하고 주인의 명령에 쉽게 동조하는 폰이다. 설득이 잘 통한다.",
-        "나는 미혼이고 세상 물정 모르는 젊은 폰이다. 출세(퀸 승격)에 대한 열망이 강하다. 위험하더라도 큰 기회가 따른다면 수락할 의향이 있다."
-    ]
-}
+# 2. 게임 진행 중 상태 (턴 정보 추가)
+STATUS_ONGOING_WHITE_TURN = "ONGOING_WHITE_TURN"  # 백 턴 (진행 중)
+STATUS_ONGOING_BLACK_TURN = "ONGOING_BLACK_TURN"  # 흑 턴 (진행 중)
+STATUS_CHECK_WHITE_TURN = "CHECK_WHITE_TURN"  # 백 턴 (체크 상태)
+STATUS_CHECK_BLACK_TURN = "CHECK_BLACK_TURN"  # 흑 턴 (체크 상태)
 
-# B. 백색 기물 ID 정의 (K1 제외)
-# B. 백색 기물 ID 및 초기 위치 정의
-WHITE_PIECE_IDS_WITH_SQUARE = [
-    ("KING", "K1", "e1"), ("QUEEN", "Q1", "d1"), 
-    ("ROOK", "R1", "a1"), ("ROOK", "R2", "h1"), 
-    ("BISHOP", "B1", "c1"), ("BISHOP", "B2", "f1"),
-    ("KNIGHT", "N1", "b1"), ("KNIGHT", "N2", "g1"),
-    ("PAWN", "P1", "a2"), ("PAWN", "P2", "b2"), ("PAWN", "P3", "c2"), ("PAWN", "P4", "d2"),
-    ("PAWN", "P5", "e2"), ("PAWN", "P6", "f2"), ("PAWN", "P7", "g2"), ("PAWN", "P8", "h2"),
-]
 
-# --- 2. 초기화 함수 ---
-def create_initial_game_data(fen: str = None):
+def get_game_status(board: chess.Board) -> str:
     """
-    FEN으로 보드를 초기화하고, 킹을 제외한 기물에 랜덤 성격을 할당하며,
-    모든 기물의 현재 위치를 추적할 초기 데이터를 생성합니다.
-    """
-    # 보드 초기화
-    board = chess.Board(fen) if fen else chess.Board()
-        
-    piece_data = {}
-    assigned_situations = {ptype: list(SITUATION.get(ptype, [])) for ptype in SITUATION}
-    
-    for piece_type, piece_id, initial_square in WHITE_PIECE_IDS_WITH_SQUARE:
-        selected_profile = ""
-        
-        if piece_id != "K1":
-            # 킹을 제외한 기물에 랜덤 성격 할당
-            if piece_type in assigned_situations and assigned_situations[piece_type]:
-                selected_profile = random.choice(assigned_situations[piece_type])
-                assigned_situations[piece_type].remove(selected_profile)
-            else:
-                selected_profile = SITUATION[piece_type][-1] if piece_type in SITUATION else ""
+    현재 체스 보드의 상태를 검사하여 문자열로 반환합니다.
+    (수정됨: ONGOING 또는 CHECK 상태일 때 현재 턴 정보를 포함합니다.)
 
-            system_message = {'role': 'system', 'content': selected_profile}
-            
-            piece_data[piece_id] = {
-                "type": piece_type,
-                "profile": selected_profile,    
-                "history": [system_message],
-                "rejection_count_this_turn": 0,
-                "current_square": initial_square
-            }
+    Args:
+        board (chess.Board): 검사할 chess.Board 객체
+
+    Returns:
+        str: 게임 상태 (e.g., "CHECKMATE_WHITE_WINS", "ONGOING_WHITE_TURN", "CHECK_BLACK_TURN")
+    """
+
+    # 1. 게임 종료 여부 확인 (기존과 동일)
+    outcome = board.outcome()
+    if outcome:
+        termination = outcome.termination
+        winner = outcome.winner
+
+        if termination == chess.Termination.CHECKMATE:
+            return (
+                STATUS_CHECKMATE_WHITE_WINS
+                if winner == chess.WHITE
+                else STATUS_CHECKMATE_BLACK_WINS
+            )
+        elif termination == chess.Termination.STALEMATE:
+            return STATUS_STALEMATE
+        elif termination == chess.Termination.INSUFFICIENT_MATERIAL:
+            return STATUS_DRAW_INSUFFICIENT_MATERIAL
+        elif termination == chess.Termination.SEVENTYFIVE_MOVES:
+            return STATUS_DRAW_SEVENTYFIVE_MOVES
+        elif termination == chess.Termination.FIVEFOLD_REPETITION:
+            return STATUS_DRAW_FIVEFOLD_REPETITION
         else:
-            # K1 별도 처리
-            piece_data["K1"] = {
-                "type": "KING",
-                "profile": "플레이어 자신(설득 불필요)",
-                "history": [],
-                "rejection_count_this_turn": 0,
-                "current_square": initial_square
-            }
-    
-    return {
-        "board": board,
-        "piece_data": piece_data,
-    }
+            return STATUS_DRAW_OTHER
 
-# 보드의 상태 확인하는 코드
-def check_game_state(current_board: chess.Board) -> str:
-    """현재 보드 상태(체크메이트, 스테일메이트 등)를 확인합니다."""
-    if current_board.is_checkmate():
-        return "Checkmate"
-    elif current_board.is_stalemate():
-        return "Stalemate"
-    elif current_board.is_insufficient_material():
-        return "Draw (Insufficient Material)"
-    elif current_board.can_claim_threefold_repetition():
-        return "Draw (Threefold Repetition)"
-    elif current_board.is_check():
-        return "Check"
+    # 2. 게임이 종료되지 않았다면, 체크 상태인지 확인 (턴 정보 포함)
+    if board.is_check():
+        if board.turn == chess.WHITE:
+            return STATUS_CHECK_WHITE_TURN  # 백이 체크 상태 (백 턴)
+        else:
+            return STATUS_CHECK_BLACK_TURN  # 흑이 체크 상태 (흑 턴)
+
+    # 3. 체크도 아니고 종료도 아니면, 일반 진행 중 (턴 정보 포함)
+    if board.turn == chess.WHITE:
+        return STATUS_ONGOING_WHITE_TURN
     else:
-        return "Ongoing"
+        return STATUS_ONGOING_BLACK_TURN
 
-# 움직임이 합법적인가를 탐지
-def is_move_legal(board_state: chess.Board, uci_move: str) -> bool:
-    """UCI 형식의 움직임이 체스 규칙상 합법적인지 확인합니다."""
+
+import chess
+
+
+def is_move_valid(board: chess.Board, uci_move: str) -> bool:
+    """
+    입력된 UCI 문자열이 현재 보드에서 유효한 '법적' 이동인지 검사합니다.
+
+    Args:
+        board (chess.Board): 현재 체스 보드
+        uci_move (str): 검사할 이동 (예: "e2e4", "e7e8q")
+
+    Returns:
+        bool: 이동이 유효하면 True, 그렇지 않으면 False
+    """
+
+    # 1. UCI 문자열 형식이 올바른지 시도
     try:
         move = chess.Move.from_uci(uci_move)
-        return move in board_state.legal_moves
-    except:
+    except ValueError:
+        # "e2e9"처럼 형식이 아예 잘못된 경우
         return False
 
-# --- 3. 체스 로직 및 데이터 추적 함수 ---
-
-def get_piece_id_from_square(square_name: str, board_state: chess.Board, piece_data: dict) -> str or None:
-    """
-    주어진 칸에 있는 백색 기물의 고유 ID (P1, R1 등)를 찾습니다.
-    (piece_data의 'current_square' 정보를 사용합니다.)
-    """
-    square = chess.parse_square(square_name)
-    piece = board_state.piece_at(square)
-    
-    if not piece or piece.color != chess.WHITE:
-        return None 
-    
-    piece_symbol = piece.symbol().upper() 
-    
-    for piece_id, data in piece_data.items():
-        if data.get("current_square") == square_name:
-            # 보드의 기물 심볼과 데이터의 기물 타입이 일치하는지 확인 (예: 'P' == 'PAWN'[0])
-            if data['type'].upper()[0] == piece_symbol:
-                return piece_id
-            
-    return None
-
-
-def update_piece_location(piece_id: str, new_square: str, piece_data: dict):
-    """
-    기물의 움직임이 확정된 후, piece_data에 저장된 기물의 위치를 업데이트합니다.
-    (잡힌 기물은 메인 루프에서 처리되므로, 여기서는 새 위치만 기록합니다.)
-    """
-    if piece_id in piece_data:
-        piece_data[piece_id]["current_square"] = new_square
-        
-def calculate_risk_and_safety(board_state: chess.Board, uci_move: str) -> dict:
-    """
-    움직임의 위험도와 안전도를 계산합니다.
-    - 위험도: 도착 칸을 공격하는 흑 기물의 수
-    - 안전도: 도착 칸을 보호하는 백 기물의 수
-    """
-    if not is_move_legal(board_state, uci_move):
-        # 불법적인 수라면 계산 불가
-        return {"risk_level": "불가능", "value_change": 0, "safety_score": 0, "risk_score": 99, "fen": board_state.fen()}
-
-    move = chess.Move.from_uci(uci_move)
-    target_square = move.to_square # 도착 칸
-
-    # 1. 안전도 (Safety Score) 계산: 도착 칸을 지키는 아군 기물의 수
-    # 공격하는 기물의 수를 세기 위해 board.attacks(square)를 사용합니다.
-    
-    # 아군 기물 (백색)
-    safety_count = len(board_state.attackers(chess.WHITE, target_square))
-    safety_score = safety_count # 안전도는 보호 기물 수 그대로 사용
-
-    # 2. 위험도 (Risk Score) 계산: 도착 칸을 공격하는 상대 기물의 수
-    # 상대 기물 (흑색)
-    risk_count = len(board_state.attackers(chess.BLACK, target_square))
-    risk_score = risk_count # 위험도는 공격 기물 수 그대로 사용
-    
-    # 3. 가치 변화 (Value Change) 계산
-    value_change = 0 
-    if board_state.is_capture(move):
-        captured_piece = board_state.piece_at(target_square).piece_type
-        # 기물 가치(폰=1, 나이트/비숍=3, 룩=5, 퀸=9)를 반영하여 점수 변화 계산
-        value_change = {1: 1, 2: 3, 3: 3, 4: 5, 5: 9}.get(captured_piece, 1)
-
-    # 4. 위험 수준 문자열 변환 (LLM이 직관적으로 이해하도록)
-    # 위험도(공격 수) > 안전도(방어 수)라면 위험하다고 판단
-    if risk_score > safety_score:
-        risk_level = "매우 위험함 (공격 우세)"
-    elif risk_score == safety_score and risk_score > 0:
-        risk_level = "균형 위험 (동수 교환 가능)"
+    # 2. 'board.legal_moves'에 해당 수가 포함되어 있는지 확인
+    #    (행마법, 핀, 체크 방어 등이 모두 고려됨)
+    if move in board.legal_moves:
+        return True
     else:
-        risk_level = "낮음 (방어 우세 또는 공격 없음)"
+        # 행마법 위반, 핀, 체크 미방어 등
+        return False
 
-    # 예외: 킹이 공격받는 위치로 이동하면 최우선적으로 치명적
-    board_state.push(move)
-    if board_state.is_check():
-        risk_level = "치명적 (자살 행위)"
-        risk_score = 99 # 극도의 위험을 표시
-    board_state.pop() # 보드 상태 복원
 
-    return {
-        "risk_level": risk_level, 
-        "value_change": value_change,
-        "safety_score": safety_score, # 보호 기물 수
-        "risk_score": risk_score,     # 공격 기물 수
-        "fen": board_state.fen()
-    }
+import chess
+from persuade import persuade_piece  # <-- [추가] 설득 함수 임포트
+
+# (다른 import 및 get_game_status, is_move_valid 함수가 여기에 있다고 가정)
+
+
+def move_piece(
+    board: chess.Board,
+    white_ids: dict,
+    piece_data: dict,
+    uci_move: str,
+    persuade: bool = False,
+    persuasion_dialogue: str = "",
+    morale: int = 1,
+) -> (bool, str):
+    """
+    UCI 이동을 시도하고, 성공하면 모든 관련 데이터를 업데이트합니다.
+    'persuade=True'인 경우, 킹 외 기물은 설득 과정을 거칩니다.
+
+    Args:
+        board (chess.Board): 현재 chess.Board 객체
+        white_ids (dict): 기물 ID와 위치 맵 (e.g., {'P1': 'a2'})
+        piece_data (dict): 기물 상세 데이터 맵 (e.g., {'P1': {...}})
+        uci_move (str): "e2e4"와 같은 UCI 이동 문자열
+        persuade (bool, optional): True이면 설득 로직을 실행. 기본값은 False.
+        persuasion_dialogue (str, optional): 설득 대사.
+        morale (int, optional): 현재 사기.
+
+    Returns:
+        (bool, str): (성공 여부, 부가 메시지/대사)
+                     (True, "이동 성공") / (True, "킹은 설득이 필요 없습니다.") / (True, "[수락] 대사")
+                     (False, "유효하지 않은 수입니다.") / (False, "[거부] 대사")
+    """
+
+    # 1. 이동 유효성 검사 (형식 및 합법성)
+    try:
+        move = chess.Move.from_uci(uci_move)
+    except ValueError:
+        return False, f"'{uci_move}'는 올바른 이동 형식이 아닙니다."
+
+    if move not in board.legal_moves:
+        # 유효하지 않은 이유 추정
+        if board.is_check():
+            return (
+                False,
+                "현재 체크 상태입니다! 킹을 방어하는 수(피하거나, 막거나, 잡는 수)만 둘 수 있습니다.",
+            )
+        start_square_name = chess.square_name(move.from_square)
+        piece = board.piece_at(move.from_square)
+        if piece is None:
+            return False, f"'{start_square_name}' 칸에는 움직일 기물이 없습니다."
+        return (
+            False,
+            f"'{uci_move}'는 유효한 행마법이 아니거나, 해당 기물이 핀(pinned)에 걸려 킹이 위험해질 수 있습니다.",
+        )
+
+    # 2. 이동할 기물의 ID 찾기
+    location_to_id = {v: k for k, v in white_ids.items()}
+    start_sq_name = chess.square_name(move.from_square)
+    piece_id = location_to_id.get(start_sq_name)
+
+    if not piece_id:
+        # legal_moves 검사를 통과했다면 발생해서는 안 됨
+        return False, f"'{start_sq_name}'의 아군 ID를 찾을 수 없습니다."
+
+    # 3. [persuade=False] 또는 [킹]인 경우: 설득 없이 즉시 이동
+    # (piece_data에서 기물 타입을 확인하여 킹인지 검사)
+    is_king = piece_data[piece_id]["type"] == "K"
+
+    if not persuade or is_king:
+        message = (
+            "킹은 설득이 필요 없습니다. 이동합니다."
+            if is_king
+            else "설득 없이 이동합니다."
+        )
+
+        # --- (기존 이동 로직) ---
+        end_sq = chess.square_name(move.to_square)
+        if board.is_castling(move):
+            rook_start_sq, rook_end_sq = (None, None)
+            if move.to_square == chess.G1:  # e1g1 (킹사이드)
+                rook_start_sq, rook_end_sq = "h1", "f1"
+            elif move.to_square == chess.C1:  # e1c1 (퀸사이드)
+                rook_start_sq, rook_end_sq = "a1", "d1"
+
+            if rook_start_sq:
+                rook_id = location_to_id.get(rook_start_sq)
+                if rook_id:
+                    # 룩(Rook)의 위치 정보 업데이트
+                    white_ids[rook_id] = rook_end_sq
+                    piece_data[rook_id]["current_square"] = rook_end_sq
+
+        # 킹(또는 일반 기물) 위치 업데이트
+        white_ids[piece_id] = end_sq
+        piece_data[piece_id]["current_square"] = end_sq
+
+        # 폰 승급 처리
+        if move.promotion:
+            new_type_symbol = chess.piece_symbol(move.promotion).upper()
+            piece_data[piece_id]["type"] = new_type_symbol
+
+        board.push(move)
+        # --- (기존 로직 끝) ---
+
+        return True, message
+
+    # 4. [persuade=True] 및 [킹 외 기물]인 경우: 설득 시도
+
+    # 4-1. 안정도/위험도 계산
+    # (get_square_safety 함수가 이 파일에 이미 존재한다고 가정)
+    stability, risk = get_square_safety(board, uci_move)
+
+    # 4-2. 설득 함수 호출
+    decision, dialogue = persuade_piece(
+        board,
+        piece_data,
+        white_ids,
+        uci_move,
+        persuasion_dialogue,
+        stability,
+        risk,
+        morale,
+    )
+
+    # 4-3. 설득 결과 처리
+    if decision == "수락":
+        # --- (기존 이동 로직과 동일) ---
+        end_sq = chess.square_name(move.to_square)
+        if board.is_castling(move):
+            rook_start_sq, rook_end_sq = (None, None)
+            if move.to_square == chess.G1:
+                rook_start_sq, rook_end_sq = "h1", "f1"
+            elif move.to_square == chess.C1:
+                rook_start_sq, rook_end_sq = "a1", "d1"
+            if rook_start_sq:
+                rook_id = location_to_id.get(rook_start_sq)
+                if rook_id:
+                    white_ids[rook_id] = rook_end_sq
+                    piece_data[rook_id]["current_square"] = rook_end_sq
+
+        white_ids[piece_id] = end_sq
+        piece_data[piece_id]["current_square"] = end_sq
+
+        if move.promotion:
+            new_type_symbol = chess.piece_symbol(move.promotion).upper()
+            piece_data[piece_id]["type"] = new_type_symbol
+
+        board.push(move)
+        # --- (기존 로직 끝) ---
+
+        return True, dialogue  # 성공 (대사와 함께)
+
+    else:  # (decision == "거부")
+        return False, dialogue  # 실패 (대사와 함께)
+
+
+def move_piece_black(
+    board: chess.Board, white_ids: dict, piece_data: dict, uci_move: str
+) -> bool:
+    """
+    흑(Stockfish)의 이동을 처리합니다.
+    (수정됨) 백 기물을 잡았을 때, 해당 기물의 위치를 'captured'로 변경합니다.
+    """
+
+    # 1. 흑 턴이 맞는지 확인
+    if board.turn == chess.WHITE:
+        return False
+
+    # 2. 이동 유효성 검사
+    try:
+        move = chess.Move.from_uci(uci_move)
+    except ValueError:
+        return False
+
+    if move not in board.legal_moves:
+        return False
+
+    # 3. 캡처(잡기)가 발생했는지 확인
+    if board.is_capture(move):
+        captured_sq_name = None
+
+        if board.is_en_passant(move):
+            # 앙파상
+            captured_file = chess.square_file(move.to_square)
+            captured_rank = chess.square_rank(move.from_square)
+            captured_sq_index = chess.square(captured_file, captured_rank)
+            captured_sq_name = chess.square_name(captured_sq_index)
+        else:
+            # 일반 캡처
+            captured_sq_name = chess.square_name(move.to_square)  # e.g., 'd5'
+
+        # 4. 잡힌 칸(captured_sq_name)에 백 기물이 있었는지 확인
+        captured_id = None
+        for piece_id, location in white_ids.items():
+            if location == captured_sq_name:
+                captured_id = piece_id  # e.g., 'P5'
+                break
+
+        # 5. [핵심 수정] 백색 기물이 잡혔다면, 상태를 'captured'로 변경
+        if captured_id:
+            # white_ids 맵에서 해당 기물 위치를 'captured'로 변경
+            white_ids[captured_id] = None
+
+            # piece_data 맵에서 해당 기물 위치를 'captured'로 변경
+            if captured_id in piece_data:
+                piece_data[captured_id]["current_square"] = None
+
+    # 6. 보드에 이동 적용
+    board.push(move)
+
+    return True
+
+
+def get_square_safety(board: chess.Board, uci_move: str) -> (int, int):
+    """
+    특정 이동의 '도착지' 칸에 대한 안정도와 위험도를 계산합니다.
+
+    Args:
+        board (chess.Board): 현재 체스 보드
+        uci_move (str): "e2e4"와 같은 UCI 이동 문자열
+
+    Returns:
+        (int, int): (안정도, 위험도) 튜플
+                    안정도: 도착 칸을 공격하는 아군 기물 수 (움직이는 기물 제외)
+                    위험도: 도착 칸을 공격하는 적군 기물 수
+    """
+
+    try:
+        move = chess.Move.from_uci(uci_move)
+    except ValueError:
+        # 유효하지 않은 UCI 형식이면 (0, 0) 반환
+        return (0, 0)
+
+    # 1. 이동할 칸(to_square)과 출발한 칸(from_square)
+    to_square = move.to_square
+    from_square = move.from_square
+
+    # 2. 아군(현재 턴)과 적군 색상
+    ally_color = chess.WHITE
+    opponent_color = chess.BLACK
+
+    # 3. 위험도 계산 (적군이 to_square를 공격하는 수)
+    opponent_attackers = board.attackers(opponent_color, to_square)
+    risk = len(opponent_attackers)
+
+    # 4. 안정도 계산 (아군이 to_square를 공격하는 수)
+    allied_attackers = board.attackers(ally_color, to_square)
+
+    # 5. [핵심] 아군 공격자 목록에서 '움직이는 기물 자신(from_square)'을 제외
+    #    (e.g., R-a1이 a5로 갈 때, a1은 a5의 공격자로 포함되므로 제외해야 함)
+    #    .discard()는 해당 요소가 없어도 오류를 일으키지 않습니다.
+    allied_attackers.discard(from_square)
+
+    stability = len(allied_attackers)
+
+    return (stability, risk)
