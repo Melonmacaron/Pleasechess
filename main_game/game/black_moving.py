@@ -3,7 +3,7 @@ from stockfish import Stockfish
 
 
 class StockfishEngine:
-    def __init__(self, executable_path: str, skill_level: int = 10):
+    def __init__(self, executable_path: str, elo_level: int = 100):
         """
         Stockfish 엔진을 초기화합니다.
 
@@ -14,8 +14,8 @@ class StockfishEngine:
         """
         try:
             self.stockfish = Stockfish(path=executable_path)
-            self.stockfish.set_skill_level(skill_level)
-            print(f"✅ Stockfish 엔진 로드 성공. (레벨: {skill_level})")
+            self.stockfish.set_elo_rating(elo_level)
+            print(f"✅ Stockfish 엔진 로드 성공. (ELO레이팅: {elo_level})")
 
             if not self.stockfish.is_move_correct("e2e4"):
                 raise Exception("엔진 응답 없음")
@@ -29,6 +29,22 @@ class StockfishEngine:
         except Exception as e:
             print(f"❌ Stockfish 로드 중 알 수 없는 오류 발생: {e}")
             self.stockfish = None
+
+    def set_elo(self, elo_level: int):
+        """
+        Stockfish 엔진의 ELO 레이팅을 동적으로 변경합니다.
+        """
+        if not self.stockfish:
+            print("경고: ELO 변경 실패. Stockfish 엔진이 초기화되지 않았습니다.")
+            return
+
+        try:
+            # ELO를 정수로 변환하여 설정
+            elo = int(elo_level)
+            self.stockfish.set_elo_rating(elo)
+            print(f"✅ Stockfish ELO가 {elo}(으)로 변경되었습니다.")
+        except Exception as e:
+            print(f"❌ ELO 변경 중 오류 발생: {e}")
 
     def get_best_move(self, board: chess.Board) -> str | None:
         """

@@ -11,6 +11,11 @@ POD_ID = os.getenv("POD_ID")
 RUNPOD_OLLAMA_URL = f"https://{POD_ID}-11434.proxy.runpod.net"
 
 
+def reset_rejection(piece_data):
+    for k in piece_data.keys():
+        piece_data[k]["rejection_count_this_turn"] = 0
+
+
 def query_ollama(prompt: list, model: str = "EEVE-Korean-10.8B:latest") -> str:
     """
     Ollama API를 호출합니다.
@@ -95,7 +100,7 @@ def persuade_piece(
 아군 전체의 사기는 {morale}이다.
 현재 전체 전장 상황(FEN): {current_fen}
 
-### 왕의 명령
+### 왕의 명령 ###
 왕(플레이어)이 너에게 '{to_square_name}'(으)로 이동하라고 명령했다. (이동: {move_uci})
 이 이동의 위험도(적의 공격)는 {risk}이고, 안정도(아군 방어)는 {stability}이다.
 
@@ -108,7 +113,7 @@ def persuade_piece(
 반드시 다음 형식으로만 대답해야 한다:
 [결정][너의 대답]
 
-출력예시:
+### 출력예시:
 [수락][알겠습니다, 폐하! 가문의 영광을 위해!]
 [거부][제 목숨이 위험합니다. 이 명령은 따를 수 없습니다.]
 """

@@ -1,23 +1,31 @@
 import chess
 import os
 import sys
-import pygame 
+import pygame
 from start_chess import initialize_game
 from chess_logic import *
 from persuade import *
 from black_moving import StockfishEngine
-# draw_current_state를 임포트하려면 chess_gui.py에 이 함수가 정의되어 있어야 합니다.
-from chess_gui import run_game_gui, WINDOW_WIDTH, WINDOW_HEIGHT, draw_current_state 
+
+# GUI 관련 import 경로 수정 및 main_menu, custom_game_screen, settings_screen 추가
+from gui_utils import WINDOW_WIDTH, WINDOW_HEIGHT
+from main_menu import run_main_menu_screen
+from custom_game_screen import run_custom_game_screen
+from settings_screen import run_settings_screen
+from chess_gui import run_game_gui, draw_current_state, run_game_over_screen
+
 
 # --- 1. 환경 및 엔진 초기화 ---
 
-# [필수] 다운로드한 Stockfish .exe 파일의 '전체 경로'를 입력하세요.
-# (이 경로는 이미 사용자님의 로컬 환경에 맞게 설정되어 있다고 가정합니다.)
-STOCKFISH_PATH = r"D:\Library\바탕화면\Game_project\Pleasechess\main_game\stockfish\stockfish-windows-x86-64-avx2.exe"
+STOCKFISH_PATH = r"main_game\stockfish\stockfish-windows-x86-64-avx2.exe"
+
+# --- 1-2. 기본 설정값 (전역 변수) ---
+current_elo = 400
+current_king_name = "아서"
+current_force_move_limit = 5
 
 try:
-    # StockfishEngine 초기화
-    sf_engine = StockfishEngine(executable_path=STOCKFISH_PATH, skill_level=10)
+    sf_engine = StockfishEngine(executable_path=STOCKFISH_PATH, elo_level=current_elo)
     if sf_engine.stockfish is None:
         print("Stockfish 엔진 로드 실패. 프로그램을 종료합니다.")
         sys.exit(1)
@@ -26,241 +34,385 @@ except Exception as e:
     sys.exit(1)
 
 
-# --- 2. 게임 상태 및 데이터 초기화 (전역 변수 유지) ---
-print("--- 🚀 자아 체스 게임 시작 ---")
-# 전역 변수: game_board, game_white_ids, game_piece_data
-game_board, game_white_ids, game_piece_data = initialize_game(fen=None) 
-morale = 1  # 사기 점수 초기화
+# --- 2. 게임 상태 전역 변수 선언 ---
+game_board = None
+game_white_ids = None
+game_piece_data = None
+morale = 1
+force_move_remaining = current_force_move_limit
 
 
-# --- 3. 핸들러 함수 정의 ---
+# --- 3. 핸들러 및 헬퍼 함수 정의 ---
 
-def handle_player_move(uci_move: str, persuasion_dialogue: str) -> (str, str):
+
+def reset_game_for_new_start(fen: str = None):
     """
-    GUI에서 호출될 실제 백 기물 이동 처리 로직.
+    [수정] 새 게임 시작을 위해 모든 전역 변수를 초기화합니다.
+    (사기 점수 morale=1 초기화 추가)
+    """
+    global game_board, game_white_ids, game_piece_data, morale, force_move_remaining
+    global current_king_name, current_force_move_limit
+
+    if fen:
+        print(f"--- 🚀 커스텀 게임(FEN)으로 상태 초기화 ---")
+    else:
+        print("--- 🚀 새 게임을 위한 상태 초기화 ---")
+
+    # 1. 게임 로직 변수 초기화 (수정됨)
+    game_board, game_white_ids, game_piece_data = initialize_game(
+        fen=fen, king_name=current_king_name
+    )
+    morale = 1  # <--- 사기 점수 1로 리셋
+    force_move_remaining = current_force_move_limit
+
+    # 2. GUI 상태 (함수 속성) 초기화
+    if hasattr(run_game_gui, "prev_last_response"):
+        try:
+            del run_game_gui.prev_last_response
+            del run_game_gui.prev_last_piece_dialogue
+            del run_game_gui.prev_selected_square_name
+            del run_game_gui.prev_selected_piece_id
+            del run_game_gui.prev_selected_piece_id_to_show
+            print("이전 GUI 상태를 성공적으로 리셋했습니다.")
+        except AttributeError:
+            pass
+
+
+def handle_player_move(
+    uci_move: str, persuasion_dialogue: str, force_move: bool = False
+) -> (str, str):
+    """
+    [수정] GUI에서 호출될 실제 백 기물 이동 처리 로직.
+    move_piece로부터 (decision, dialogue, captured_value)를 받아
+    morale 전역 변수를 업데이트합니다.
     """
     global game_board, game_white_ids, game_piece_data, morale
-    
-    # 1. 유효성 검사 (GUI에서 이미 처리하지만, 안전을 위해 다시 확인)
+
     try:
         if chess.Move.from_uci(uci_move) not in game_board.legal_moves:
             return "거부", "킹의 명령: 해당 이동은 현재 규칙상 유효하지 않습니다."
     except ValueError:
         return "오류", "킹의 명령: 잘못된 UCI 형식입니다."
 
-    # 2. 안전도/위험도 계산 (필요하다면 주석 해제)
-    # stability, risk = get_square_safety(game_board, uci_move)
-
-    # 3. move_piece (설득 포함) 호출
-    decision, dialogue = move_piece(
+    # 3. move_piece 호출 (이제 3개의 값을 반환)
+    decision, dialogue, captured_value = move_piece(
         game_board,
         game_white_ids,
         game_piece_data,
         uci_move,
-        persuade=True,  # 설득 활성화
+        persuade=(not force_move),
         persuasion_dialogue=persuasion_dialogue,
-        morale=morale
+        morale=morale,
     )
+
+    # 4. [추가] 사기 점수 적용
+    if decision == "수락" or decision == True:
+        if captured_value > 0:
+            morale += captured_value
+            print(f"🎉 기물 획득! 사기 {captured_value} 증가. (현재 사기: {morale})")
 
     return decision, dialogue
 
 
-def handle_black_turn():
+def handle_black_turn() -> (bool, int):
     """
-    흑(Stockfish) 턴의 이동을 처리합니다.
+    [수정] 흑(Stockfish) 턴의 이동을 처리합니다.
+    move_piece_black으로부터 (success, lost_value)를 받아 그대로 반환합니다.
     """
     global game_board, game_white_ids, game_piece_data
-    
-    # 1. Stockfish 최적의 수 계산
+
     stockfish_move = sf_engine.get_best_move(game_board)
 
     if stockfish_move:
-        # 2. 이동 적용 (흑 기물은 설득 없이 바로 이동)
-        if move_piece_black(game_board, game_white_ids, game_piece_data, stockfish_move):
-            return True
+        success, lost_value = move_piece_black(
+            game_board, game_white_ids, game_piece_data, stockfish_move
+        )
+        if success:
+            return (True, lost_value)
         else:
             print(f"❌ 흑 기물 이동 오류: {stockfish_move}")
-            return False
+            return (False, 0)
     else:
         print("❌ Stockfish가 수를 찾지 못했습니다.")
-        return False
+        return (False, 0)
 
 
-# --- 4. 게임 종료 후 딜레이 및 최종 화면 표시 함수 ---
-def delay_game_over(screen, clock, final_message: str):
-    """
-    게임 종료 메시지를 표시하고 일정 시간 대기하는 루프.
-    """
-    # [수정] 전역 변수 선언 추가
-    global game_board, game_white_ids, game_piece_data
-    
-    delay_ms = 5000 # 게임 종료 후 5초 대기
-    start_time = pygame.time.get_ticks()
-    
-    # GUI 상태는 모두 초기화된 것으로 간주 (선택된 기물 없음)
-    selected_piece_id_to_show = None
-    last_piece_dialogue = "" # 최종 결과이므로 기물 응답은 비움
-    
-    # 최종 보드 상태를 한 번 그리고 시작
-    draw_current_state(
-        screen, 
-        game_board, 
-        game_white_ids, 
-        game_piece_data, 
-        final_message, # 최종 메시지를 last_response로 전달
-        last_piece_dialogue,
-        selected_piece_id_to_show
-    )
-    
-    while pygame.time.get_ticks() < start_time + delay_ms:
-        # Pygame 이벤트 큐를 비워서 창이 멈추지 않도록 처리
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                return 
-            # ESC나 아무 키/클릭을 누르면 바로 종료 가능하도록 처리
-            if event.type == pygame.KEYDOWN or event.type == pygame.MOUSEBUTTONDOWN:
-                return 
-                
-        # 딜레이 동안 화면 유지 및 갱신 (60 FPS)
-        clock.tick(60)
+# --- 5. 메인 게임 루프 (상태 관리자) ---
 
-# --- 5. 메인 게임 루프 ---
 
 def main_game_loop():
-    global game_board, game_white_ids, game_piece_data
-    
+    global game_board, game_white_ids, game_piece_data, force_move_remaining, morale
+    global current_elo, current_king_name, current_force_move_limit, sf_engine
+
     pygame.init()
-    screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT)) 
+
+    # ⬇️⬇️⬇️ [수정] ⬇️⬇️⬇️
+    # screen과 clock을 먼저 정의해야 합니다.
+    screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
     clock = pygame.time.Clock()
-    
+
+    # 클립보드(붙여넣기) 모듈 초기화 (창 생성 *이후*에 호출)
+    try:
+        pygame.scrap.init()
+        print("✅ Pygame 클립보드(scrap) 모듈 초기화 성공.")
+    except pygame.error as e:
+        print(f"❌ Pygame 클립보드(scrap) 초기화 실패: {e}")
+        print("붙여넣기(Ctrl+V) 기능이 작동하지 않을 수 있습니다.")
+    # ⬆️⬆️⬆️ [수정 완료] ⬆️⬆️⬆️
+
+    current_state = "MENU"
+
     while True:
-        # 1. 매 루프 시작 시 보드 상태 확인
-        board_state = get_game_status(game_board)
-        
-        # 2. [핵심] 게임 종료 확인 및 처리 (턴 로직보다 상위)
-        is_game_over = board_state in [
-            STATUS_CHECKMATE_WHITE_WINS, 
-            STATUS_CHECKMATE_BLACK_WINS, 
-            STATUS_STALEMATE, 
-            STATUS_DRAW_INSUFFICIENT_MATERIAL, 
-            STATUS_DRAW_SEVENTYFIVE_MOVES, 
-            STATUS_DRAW_FIVEFOLD_REPETITION, 
-            STATUS_DRAW_OTHER
-        ]
 
-        if is_game_over:
-            print(f"--- 🏁 게임 종료 --- (최종 결과: {board_state})")
-            
-            # 최종 메시지 설정
-            if board_state == STATUS_CHECKMATE_WHITE_WINS:
-                final_message = "[게임 종료] 체크메이트! 백색 기물 승리!"
-            elif board_state == STATUS_CHECKMATE_BLACK_WINS:
-                final_message = "[게임 종료] 체크메이트! 흑색 기물 승리."
-            elif board_state == STATUS_STALEMATE or \
-                 board_state == STATUS_DRAW_INSUFFICIENT_MATERIAL or \
-                 board_state == STATUS_DRAW_SEVENTYFIVE_MOVES or \
-                 board_state == STATUS_DRAW_FIVEFOLD_REPETITION or \
-                 board_state == STATUS_DRAW_OTHER:
-                final_message = "[게임 종료] 무승부!"
+        # --- 5-1. 메인 메뉴 상태 ---
+        if current_state == "MENU":
+            pygame.display.set_caption("PLEASE Chess - 메인 메뉴")
+            menu_choice = run_main_menu_screen(screen, clock)
+
+            if menu_choice == "NEW_GAME":
+                reset_game_for_new_start(fen=None)
+                current_state = "PLAYING"
+
+            elif menu_choice == "CUSTOM_GAME":
+                current_state = "CUSTOM_GAME_SETUP"
+
+            elif menu_choice == "SETTINGS":
+                current_state = "SETTINGS"
+
+            elif menu_choice == "QUIT":
+                break
+
+        # --- 5-2. 커스텀 게임 FEN 입력 상태 ---
+        elif current_state == "CUSTOM_GAME_SETUP":
+            pygame.display.set_caption("PLEASE Chess - 커스텀 게임 설정")
+            fen_result = run_custom_game_screen(screen, clock)
+
+            if fen_result == "BACK":
+                current_state = "MENU"
+
+            elif fen_result == "QUIT":
+                break
+
             else:
-                final_message = "[게임 종료] 게임이 종료되었습니다."
-            
-            # 최종 화면 표시 및 5초 대기 후 루프 종료
-            delay_game_over(screen, clock, final_message)
-            break
-        
-        # 3. 턴 처리 로직 시작 (종료되지 않았을 때만 실행)
+                reset_game_for_new_start(fen=fen_result)
+                current_state = "PLAYING"
 
-        # 5-1. ⚪ 백 (플레이어) 턴: GUI 대기
-        if game_board.turn == chess.WHITE:
-            print(f"--- ⚪ 백 턴: {board_state} ---")
-            
-            # 흑 턴의 잔상을 제거하기 위해 화면을 한 번 지웁니다.
-            screen.fill(pygame.Color(0, 0, 0)) 
-            pygame.display.flip()
-            
-            # [수정된 run_game_gui 호출]
-            gui_result = run_game_gui(
-                game_board, 
-                game_white_ids, 
-                game_piece_data, 
-                sf_engine, 
-                handle_player_move,
-                screen, 
-                clock # U+00A0 오류 제거됨
-            )
+        # --- 5-3. 설정 화면 상태 ---
+        elif current_state == "SETTINGS":
+            pygame.display.set_caption("PLEASE Chess - 설정")
 
-            if gui_result == "WHITE_MOVED":
-                print("✅ 백의 수락 및 이동 완료. 흑 턴으로 전환.")
-                
-                # 백 턴 성공 직후 화면 안정화 (딜레이 직전에 하이라이트 제거된 화면 표시)
-                last_response = getattr(run_game_gui, 'prev_last_response', "[INFO] 백의 이동 완료.")
-                last_piece_dialogue = getattr(run_game_gui, 'prev_last_piece_dialogue', "")
-                selected_piece_id_to_show = getattr(run_game_gui, 'prev_selected_piece_id_to_show', None)
-                
+            current_settings_data = {
+                "elo": current_elo,
+                "king_name": current_king_name,
+                "force_moves": current_force_move_limit,
+            }
+
+            new_settings = run_settings_screen(screen, clock, current_settings_data)
+
+            if new_settings:
+                print(f"새 설정 적용: {new_settings}")
+
+                try:
+                    new_elo = int(new_settings["elo"])
+                    if current_elo != new_elo:
+                        current_elo = new_elo
+                        sf_engine.set_elo(current_elo)
+
+                    current_king_name = new_settings["king_name"]
+                    current_force_move_limit = int(new_settings["force_moves"])
+
+                except ValueError:
+                    print(
+                        "오류: settings_screen이 숫자가 아닌 값을 반환했습니다. (ELO/Force)"
+                    )
+                except Exception as e:
+                    print(f"설정 적용 중 오류: {e}")
+
+            current_state = "MENU"
+
+        # --- 5-4. 게임 플레이 상태 ---
+        elif current_state == "PLAYING":
+            pygame.display.set_caption("자아를 가진 체스 (플레이 중)")
+
+            # 1. 보드 상태 확인
+            board_state = get_game_status(game_board)
+
+            # 2. 게임 종료 확인
+            is_game_over = board_state in [
+                STATUS_CHECKMATE_WHITE_WINS,
+                STATUS_CHECKMATE_BLACK_WINS,
+                STATUS_STALEMATE,
+                STATUS_DRAW_INSUFFICIENT_MATERIAL,
+                STATUS_DRAW_SEVENTYFIVE_MOVES,
+                STATUS_DRAW_FIVEFOLD_REPETITION,
+                STATUS_DRAW_OTHER,
+            ]
+
+            if is_game_over:
+                # ( ... 게임 오버 로직 ... )
+                if board_state == STATUS_CHECKMATE_WHITE_WINS:
+                    final_message = "체크메이트! 백색 승리!"
+                elif board_state == STATUS_CHECKMATE_BLACK_WINS:
+                    final_message = "체크메이트! 흑색 승리."
+                else:
+                    final_message = "무승부!"
+
+                selected_piece_id_to_show = getattr(
+                    run_game_gui, "prev_selected_piece_id_to_show", None
+                )
+                last_piece_dialogue = getattr(
+                    run_game_gui, "prev_last_piece_dialogue", ""
+                )
                 draw_current_state(
-                    screen, 
-                    game_board, 
-                    game_white_ids, 
-                    game_piece_data, 
-                    last_response, 
+                    screen,
+                    game_board,
+                    game_white_ids,
+                    game_piece_data,
+                    f"[게임 종료] {final_message}",
                     last_piece_dialogue,
-                    selected_piece_id_to_show
+                    selected_piece_id_to_show,
+                    force_move_count=force_move_remaining,
                 )
                 pygame.display.flip()
-                
-                # 딜레이를 100ms로 변경
-                pygame.time.delay(100) 
 
-            elif gui_result == "QUIT":
-                print("사용자가 게임을 종료했습니다.")
-                break
-                
-        # 5-2. ⚫ 흑 (Stockfish) 턴: 자동 진행
-        elif game_board.turn == chess.BLACK:
-            print("--- ⚫ 흑 턴: Stockfish 실행 중 ---")
-            
-            # 흑의 이동을 처리하고 보드를 업데이트
-            if not handle_black_turn():
-                print("흑 턴 처리 실패. 게임을 종료합니다.")
-                break
-            
-            print("✅ 흑의 이동 완료. 백 턴으로 전환.")
-            
-            # 흑 턴 완료 후 결과를 사용자에게 보여주기 위한 딜레이 (100ms로 단축)
-            last_response = getattr(run_game_gui, 'prev_last_response', "[INFO] 흑의 이동 완료.")
-            last_piece_dialogue = getattr(run_game_gui, 'prev_last_piece_dialogue', "")
-            selected_piece_id_to_show = getattr(run_game_gui, 'prev_selected_piece_id_to_show', None)
-            
-            delay_ms = 100 
-            start_time = pygame.time.get_ticks()
-            
-            while pygame.time.get_ticks() < start_time + delay_ms:
-                # 이벤트 큐를 비워 창이 멈추지 않도록 합니다.
-                for event in pygame.event.get():
-                    if event.type == pygame.QUIT:
-                        pygame.quit()
-                        sys.exit(0)
-                        
-                # 흑 턴 완료 보드와 이전 메시지를 화면에 다시 그림
-                draw_current_state(
-                    screen, 
-                    game_board, 
-                    game_white_ids, 
-                    game_piece_data, 
-                    last_response, 
-                    last_piece_dialogue,
-                    selected_piece_id_to_show
-                )
-                clock.tick(60) 
+                game_over_choice = run_game_over_screen(screen, clock, final_message)
 
-            # 다음 백 턴 GUI 호출을 위해 이벤트 큐를 비움
-            pygame.event.clear()
+                if game_over_choice == "NEW_GAME":
+                    reset_game_for_new_start(fen=None)
+                    continue
 
+                elif game_over_choice == "QUIT":
+                    current_state = "MENU"
+
+            # 3. 턴 처리 로직 (게임이 종료되지 않았을 때)
+            else:
+                # 3-1. ⚪ 백 (플레이어) 턴
+                if game_board.turn == chess.WHITE:
+                    gui_result = run_game_gui(
+                        game_board,
+                        game_white_ids,
+                        game_piece_data,
+                        sf_engine,
+                        handle_player_move,
+                        screen,
+                        clock,
+                        force_move_count=force_move_remaining,
+                    )
+
+                    if gui_result == "WHITE_MOVED":
+                        print("✅ 백의 수락 및 이동 완료. 흑 턴으로 전환.")
+                        reset_rejection(game_piece_data)
+                        # ( ... 딜레이 로직 ... )
+                        last_response = getattr(
+                            run_game_gui, "prev_last_response", "[INFO] 백의 이동 완료."
+                        )
+                        last_piece_dialogue = getattr(
+                            run_game_gui, "prev_last_piece_dialogue", ""
+                        )
+                        selected_piece_id_to_show = getattr(
+                            run_game_gui, "prev_selected_piece_id_to_show", None
+                        )
+                        draw_current_state(
+                            screen,
+                            game_board,
+                            game_white_ids,
+                            game_piece_data,
+                            last_response,
+                            last_piece_dialogue,
+                            selected_piece_id_to_show,
+                            force_move_count=force_move_remaining,
+                        )
+                        pygame.display.flip()
+                        pygame.time.delay(100)
+
+                    elif gui_result == "WHITE_MOVED_FORCED":
+                        force_move_remaining -= 1
+                        print(
+                            f"✅ 백의 강제 이동 완료. (남은 횟수: {force_move_remaining})"
+                        )
+                        reset_rejection(game_piece_data)
+                        # ( ... 딜레이 로직 ... )
+                        last_response = getattr(
+                            run_game_gui, "prev_last_response", "[INFO] 백의 이동 완료."
+                        )
+                        last_piece_dialogue = getattr(
+                            run_game_gui, "prev_last_piece_dialogue", ""
+                        )
+                        selected_piece_id_to_show = getattr(
+                            run_game_gui, "prev_selected_piece_id_to_show", None
+                        )
+                        draw_current_state(
+                            screen,
+                            game_board,
+                            game_white_ids,
+                            game_piece_data,
+                            last_response,
+                            last_piece_dialogue,
+                            selected_piece_id_to_show,
+                            force_move_count=force_move_remaining,
+                        )
+                        pygame.display.flip()
+                        pygame.time.delay(100)
+
+                    elif gui_result == "QUIT":
+                        print("사용자가 게임을 중단했습니다. 메뉴로 복귀합니다.")
+                        current_state = "MENU"
+
+                # 3-2. ⚫ 흑 (Stockfish) 턴
+                elif game_board.turn == chess.BLACK:
+                    print("--- ⚫ 흑 턴: Stockfish 실행 중 ---")
+
+                    success, lost_value = handle_black_turn()
+
+                    if not success:
+                        print("흑 턴 처리 실패. 게임을 종료합니다.")
+                        break
+
+                    if lost_value > 0:
+                        morale -= lost_value
+                        print(
+                            f"🔥 기물 잃음! 사기 {lost_value} 감소. (현재 사기: {morale})"
+                        )
+
+                    print("✅ 흑의 이동 완료. 백 턴으로 전환.")
+
+                    # ( ... 흑 턴 딜레이 로직 ... )
+                    last_response = getattr(
+                        run_game_gui, "prev_last_response", "[INFO] 흑의 이동 완료."
+                    )
+                    last_piece_dialogue = getattr(
+                        run_game_gui, "prev_last_piece_dialogue", ""
+                    )
+                    selected_piece_id_to_show = getattr(
+                        run_game_gui, "prev_selected_piece_id_to_show", None
+                    )
+
+                    delay_ms = 100
+                    start_time = pygame.time.get_ticks()
+
+                    while pygame.time.get_ticks() < start_time + delay_ms:
+                        for event in pygame.event.get():
+                            if event.type == pygame.QUIT:
+                                pygame.quit()
+                                sys.exit(0)
+
+                        draw_current_state(
+                            screen,
+                            game_board,
+                            game_white_ids,
+                            game_piece_data,
+                            last_response,
+                            last_piece_dialogue,
+                            selected_piece_id_to_show,
+                            force_move_count=force_move_remaining,
+                        )
+                        clock.tick(60)
+
+                    pygame.event.clear()
 
     # 메인 루프 종료 시 Pygame 환경 최종 종료
-    pygame.quit() 
-        
+    pygame.quit()
+
 
 if __name__ == "__main__":
     try:
