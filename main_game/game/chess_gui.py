@@ -585,6 +585,29 @@ def run_game_gui(
     def attempt_persuasion(is_king_move=False):
         nonlocal last_response, last_piece_dialogue, dialogue_text, dialogue_active, selected_piece_id_to_show
 
+        # ⬇️⬇️⬇️ [수정된 부분] ⬇️⬇️⬇️
+        if not is_king_move:
+            # 1. 현재 선택된 기물의 거절 횟수 확인
+            if not selected_piece_id:
+                last_response = "[ERROR] 기물이 선택되지 않았습니다."
+                return None
+
+            target_piece = game_piece_data.get(selected_piece_id)
+            if not target_piece:
+                last_response = "[ERROR] 기물 데이터를 찾을 수 없습니다."
+                return None
+
+            rejection_count = target_piece.get("rejection_count_this_turn", 0)
+
+            # 2. 거절 횟수가 3회 이상이면 차단
+            if rejection_count >= 3:
+                last_response = f"[{target_piece.get('name', '기물')}] 이(가) 더는 왕의 명령을 듣지 않습니다. (거절 {rejection_count}회 누적)"
+                # (입력한 대화 내용은 지워줍니다)
+                dialogue_text = ""
+                dialogue_active = True
+                return None  # 설득 시도 자체를 중단
+        # ⬆️⬆️⬆️ [수정 완료] ⬆️⬆️⬆️
+
         if not is_king_move and (game_state != 2 or not dialogue_text.strip()):
             last_response = "[ERROR] 이동 목표 선택 및 대사 입력이 필요합니다."
             return None
