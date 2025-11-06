@@ -41,10 +41,29 @@
    <img src="https://img.shields.io/badge/Stockfish-4B0082?style=for-the-badge&logo=&logoColor=white">
 
 ### AI 및 LLM
+<img src="https://img.shields.io/badge/Runpod-3700AB?style=for-the-badge&logo=Runpod&logoColor=white">
   <img src="https://img.shields.io/badge/Ollama-000000?style=for-the-badge&logo=Ollama&logoColor=white">
   <img src="https://img.shields.io/badge/EEVE Korean 10.8B-36454F?style=for-the-badge&logo=EEVE&logoColor=white">
 
 ### GUI
   <img src="https://img.shields.io/badge/Pygame-FF8C00?style=for-the-badge&logo=Pygame&logoColor=white">
 
-## 세부 기능
+## 실행 준비 
+### requirements.txt의 패키지 설치
+  ``` pip install -r requirements.txt ```
+
+### Runpod 서버 구성
+- 기본적으로 Runpod서버는 EEVE 모델의 호스트로만 사용할 것이기 때문에 다음과 같이 구성한다.
+1. Runpod에 네트워크 볼륨 생성 (20GB정도면 충분)
+2. 해당 네트워크 볼륨을 이용해서 GPU를 포함한 Pod 생성(GPU로는 A4000정도면 충분)
+3. 네트워크를 실행후 \workspace 에 start.sh를 복사
+4. Runpod에서 Edit Pod을 선택 후 start command에 <br> ``` /bin/bash /workspace/start.sh ``` 입력
+5. Port를 11434 에 22로 설정후 환경변수에 OLLAMA_HOST / 0.0.0.0으로 설정
+6. log에 ```sleep infinity```가 보이면 준비 완료
+
+### 환경변수 설정후 실행
+1. .env파일을 /main_game/game 안에 생성후 <br>POD_ID={runpod인스턴스 아이디} 로 설정 
+2. python /main_game/game/main.py로 실행
+
+## 이미지 데이터 출처
+[Lichess-github](https://github.com/lichess-org/lila)

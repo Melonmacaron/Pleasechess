@@ -510,7 +510,7 @@ def run_game_gui(
     screen = screen
     clock = clock
 
-    pygame.display.set_caption("자아를 가진 체스")
+    pygame.display.set_caption("Please Chess")
     pygame.key.start_text_input()
 
     piece_images = load_piece_images(SQUARE_SIZE)
